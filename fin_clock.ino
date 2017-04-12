@@ -19,9 +19,13 @@
 
 Stepper stepper(STEPS, D4, D2, D3, D1);
 int dayArray[NUMBER_OF_DAYS];
-int currentDay = 12;
+int currentDayNumber = 12;
 
 unsigned long timeStamp = -1;
+
+// TCP connection code
+TCPServer server = TCPServer(1337);
+TCPClient client;
 
 void setup() {
   // setup serial communication (for debugging)
@@ -31,9 +35,6 @@ void setup() {
   for(int i = 1; i <= 4; i++) {
     pinMode(i, OUTPUT);
   }
-
-  // set stepper speed
-  stepper.setSpeed(SPEED_MEDIUM);
 
   // set button pins
   pinMode(BUTTON_FORWARD, INPUT);
@@ -45,14 +46,26 @@ void setup() {
     dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : 2048;
   }
 
-  // cloud functions
+  // set stepper speed and set initial postion
+  stepper.setSpeed(SPEED_MEDIUM);
+  goToDayNumber(currentDayNumber);
+
+  // TCP and cloud functions
   Particle.function("command", executeCommand);
+  server.begin();
 }
 
 void loop() {
   // methods used for initial calibration!
   if(Serial.available() > 0) {
     executeCommand(Serial.readString());
+  }
+
+  // set client when availble
+  if(!client.connected()) {
+    Serial.println("Waiting for client...");
+    client = server.available();
+    delay(2000);
   }
 
   // make sure not to do something is not position has been set
@@ -62,13 +75,13 @@ void loop() {
     return;
   }
 
-  // if watch has been idle
+  // if clock has been idle for more than THRESHOLD_IDLE seconds
   if(timeStamp != -1 && (millis() - timeStamp) > (THRESHOLD_IDLE * 1000)) {
-    goToDayNumber(currentDay);
+    goToDayNumber(currentDayNumber);
     timeStamp = -1;
   }
 
-  // forward button pushed
+  // when forward button is being pushed
   if(digitalRead(BUTTON_FORWARD) == HIGH) {
     int stepsTaken = 0;
 
@@ -78,11 +91,13 @@ void loop() {
     }
 
     int newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
+
+    server.println(getDayNumberFromPosition(newPosition));
     setPosition(newPosition);
     timeStamp = millis();
   }
 
-  // back button pushed
+  // when back button is being pushed
   if(digitalRead(BUTTON_BACK) == HIGH) {
     int stepsTaken = 0;
 
@@ -100,6 +115,7 @@ void loop() {
       newPosition = ONE_REVOLUTION - ((stepsTaken - getPosition()) % ONE_REVOLUTION);
     }
 
+    server.println(getDayNumberFromPosition(newPosition));
     setPosition(newPosition);
     timeStamp = millis();
   }
@@ -167,6 +183,10 @@ void goToDayNumber(int dayNumber) {
     int newPosition = dayArray[dayNumber - 1] - offset;
     goToPosition(newPosition, currentPosition);
   }
+
+  server.println(dayNumber);
+  Serial.print("Current week: ");
+  Serial.println(dayNumber);
 }
 
 int executeCommand(String command) {
@@ -179,13 +199,19 @@ int executeCommand(String command) {
       setPosition((short) value);
       break;
     case 'R':
-      stepper.step(-value);
+      stepper.step(-1 * value);
       break;
     case 'C':
       EEPROM.clear();
       break;
     case 'D':
       goToDayNumber(value);
+      break;
+    case 'T':
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.print("SSID: ");
+      Serial.println(WiFi.SSID());
       break;
     default:
       res = -1;
