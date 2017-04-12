@@ -15,9 +15,13 @@
 //misc
 #define NUMBER_OF_DAYS 30
 #define EERPROM_ADDRESS 0
+#define THRESHOLD_IDLE 15
 
 Stepper stepper(STEPS, D4, D2, D3, D1);
 int dayArray[NUMBER_OF_DAYS];
+int currentDay = 12;
+
+unsigned long timeStamp = -1;
 
 void setup() {
   // setup serial communication (for debugging)
@@ -40,29 +44,15 @@ void setup() {
     int intervalSize = ONE_REVOLUTION / NUMBER_OF_DAYS;
     dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : 2048;
   }
+
+  // cloud functions
+  Particle.function("command", executeCommand);
 }
 
 void loop() {
   // methods used for initial calibration!
   if(Serial.available() > 0) {
-    String command = Serial.readString();
-    char commandType = command.charAt(0);
-    int value = command.substring(1, command.length() -1).toInt();
-
-    switch(commandType) {
-      case 'S':
-        setPosition((short) value);
-        break;
-      case 'R':
-        stepper.step(value);
-        break;
-      case 'C':
-        EEPROM.clear();
-        break;
-      case 'D':
-        goToDayNumber(value);
-        break;
-    }
+    executeCommand(Serial.readString());
   }
 
   // make sure not to do something is not position has been set
@@ -70,6 +60,12 @@ void loop() {
     Serial.println("No start position is set!");
     delay(2000);
     return;
+  }
+
+  // if watch has been idle
+  if(timeStamp != -1 && (millis() - timeStamp) > (THRESHOLD_IDLE * 1000)) {
+    goToDayNumber(currentDay);
+    timeStamp = -1;
   }
 
   // forward button pushed
@@ -83,6 +79,7 @@ void loop() {
 
     int newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
     setPosition(newPosition);
+    timeStamp = millis();
   }
 
   // back button pushed
@@ -104,6 +101,7 @@ void loop() {
     }
 
     setPosition(newPosition);
+    timeStamp = millis();
   }
 }
 
@@ -169,4 +167,30 @@ void goToDayNumber(int dayNumber) {
     int newPosition = dayArray[dayNumber - 1] - offset;
     goToPosition(newPosition, currentPosition);
   }
+}
+
+int executeCommand(String command) {
+  char commandType = command.charAt(0);
+  int value = command.substring(1).toInt();
+  int res = 1;
+
+  switch(commandType) {
+    case 'S':
+      setPosition((short) value);
+      break;
+    case 'R':
+      stepper.step(-value);
+      break;
+    case 'C':
+      EEPROM.clear();
+      break;
+    case 'D':
+      goToDayNumber(value);
+      break;
+    default:
+      res = -1;
+      break;
+  }
+
+  return res;
 }
