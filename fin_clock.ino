@@ -7,6 +7,8 @@
 #define SPEED_MEDIUM 500
 #define SPEED_LOW 250
 #define SPEED_VERY_SLOW 100
+#define FORWARD_STEP -1
+#define BACKWARD_STEP 1
 
 // button properties
 #define BUTTON_FORWARD D5
@@ -39,11 +41,12 @@ void setup() {
   // set button pins
   pinMode(BUTTON_FORWARD, INPUT);
   pinMode(BUTTON_BACK, INPUT);
+  pinMode(D7, OUTPUT); // built in LED
 
   // create array with day intervals
   for(int i = 0; i < NUMBER_OF_DAYS; i++) {
     int intervalSize = ONE_REVOLUTION / NUMBER_OF_DAYS;
-    dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : 2048;
+    dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : ONE_REVOLUTION;
   }
 
   // set stepper speed and set initial postion
@@ -56,16 +59,23 @@ void setup() {
 }
 
 void loop() {
-  // methods used for initial calibration!
+
+  // execute command when data is available
   if(Serial.available() > 0) {
     executeCommand(Serial.readString());
   }
 
-  // set client when availble
+  // set client when available
   if(!client.connected()) {
     Serial.println("Waiting for client...");
+
+    // use built in LED to indicate that no client is connected
+    digitalWrite(D7, HIGH);
+    delay(1000);
+    digitalWrite(D7, LOW);
+    delay(1000);
+
     client = server.available();
-    delay(2000);
   }
 
   // make sure not to do something is not position has been set
@@ -86,7 +96,7 @@ void loop() {
     int stepsTaken = 0;
 
     while(digitalRead(BUTTON_FORWARD) == HIGH) {
-      stepper.step(-1);
+      stepper.step(FORWARD_STEP);
       stepsTaken++;
     }
 
@@ -102,7 +112,7 @@ void loop() {
     int stepsTaken = 0;
 
     while(digitalRead(BUTTON_BACK) == HIGH) {
-      stepper.step(1);
+      stepper.step(BACKWARD_STEP);
       stepsTaken++;
     }
 
@@ -144,13 +154,12 @@ short getPosition() {
 }
 
 void goToPosition(int to, int from) {
-  //logically it would be the other way around, but negative numbers = forward!
   stepper.step(from - to);
   setPosition(to);
 }
 
 int getDayNumberFromPosition(int stepPosition) {
-  int day = - 1;
+  int day = -1;
 
   for(int i = 0; i < NUMBER_OF_DAYS; i++) {
     if(stepPosition >= 0 && stepPosition <= dayArray[0]) {
@@ -199,7 +208,7 @@ int executeCommand(String command) {
       setPosition((short) value);
       break;
     case 'R':
-      stepper.step(-1 * value);
+      stepper.step(-1 * value); //negative is forward and positive backward
       break;
     case 'C':
       EEPROM.clear();
