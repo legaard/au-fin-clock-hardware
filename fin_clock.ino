@@ -105,6 +105,8 @@ void loop() {
     server.println(getDayNumberFromPosition(newPosition));
     setPosition(newPosition);
     timeStamp = millis();
+
+    Particle.publish("button", "forward");
   }
 
   // when back button is being pushed
@@ -128,6 +130,8 @@ void loop() {
     server.println(getDayNumberFromPosition(newPosition));
     setPosition(newPosition);
     timeStamp = millis();
+
+    Particle.publish("button", "backward");
   }
 }
 
@@ -196,6 +200,8 @@ void goToDayNumber(int dayNumber) {
   server.println(dayNumber);
   Serial.print("Current week: ");
   Serial.println(dayNumber);
+
+  Particle.publish("showWeek", dayNumber);
 }
 
 int executeCommand(String command) {
