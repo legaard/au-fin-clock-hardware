@@ -21,13 +21,15 @@
 
 Stepper stepper(STEPS, D4, D2, D3, D1);
 int dayArray[NUMBER_OF_DAYS];
-int currentDayNumber = 12;
+int currentDayNumber;
 
 unsigned long timeStamp = -1;
 
 // TCP connection code
-TCPServer server = TCPServer(1337);
+int PORT = 1337;
+TCPServer server = TCPServer(PORT);
 TCPClient client;
+char MESSAGE_SEPARATOR = '#';
 
 void setup() {
   // setup serial communication (for debugging)
@@ -49,13 +51,18 @@ void setup() {
     dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : ONE_REVOLUTION;
   }
 
-  // set stepper speed and set initial postion
-  stepper.setSpeed(SPEED_MEDIUM);
-  goToDayNumber(currentDayNumber);
-
   // TCP and cloud functions
   Particle.function("command", executeCommand);
   server.begin();
+
+  // set currentday once the connection to WiFi and the cloud has been established
+  waitUntil(WiFi.ready);
+  waitUntil(Particle.connected);
+  currentDayNumber = Time.day();
+
+  // set stepper speed and set initial postion
+  stepper.setSpeed(SPEED_MEDIUM);
+  goToDayNumber(currentDayNumber);
 }
 
 void loop() {
@@ -63,6 +70,13 @@ void loop() {
   // execute command when data is available
   if(Serial.available() > 0) {
     executeCommand(Serial.readString());
+  }
+
+  // make sure not to do something is not position has been set
+  if(getPosition() == -1) {
+    Serial.println("No start position is set!");
+    delay(2000);
+    return;
   }
 
   // set client when available
@@ -78,11 +92,12 @@ void loop() {
     client = server.available();
   }
 
-  // make sure not to do something is not position has been set
-  if(getPosition() == -1) {
-    Serial.println("No start position is set!");
-    delay(2000);
-    return;
+  // echo everything back to the client
+  if(client.connected()) {
+    while(client.available()) {
+      String data = client.readStringUntil(MESSAGE_SEPARATOR);
+      if(data == "ping") server.print(data.concat(MESSAGE_SEPARATOR));
+    }
   }
 
   // if clock has been idle for more than THRESHOLD_IDLE seconds
@@ -102,7 +117,7 @@ void loop() {
 
     int newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
 
-    server.println(getDayNumberFromPosition(newPosition));
+    server.print("U" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR);
     setPosition(newPosition);
     timeStamp = millis();
 
@@ -127,7 +142,7 @@ void loop() {
       newPosition = ONE_REVOLUTION - ((stepsTaken - getPosition()) % ONE_REVOLUTION);
     }
 
-    server.println(getDayNumberFromPosition(newPosition));
+    server.print("U" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR);
     setPosition(newPosition);
     timeStamp = millis();
 
@@ -138,14 +153,12 @@ void loop() {
 /********** HELPER METHODS **********/
 void setPosition(short value) {
   if(value < 0 || value > ONE_REVOLUTION) {
-    Serial.print("Position out of bounds! Position: ");
-    Serial.println(value);
+    Serial.println("Position out of bounds! Position: " + String(value));
     return;
   }
 
   EEPROM.put(EERPROM_ADDRESS, value);
-  Serial.print("New position is set to: ");
-  Serial.println(value);
+  Serial.println("New position is set to: " + String(value));
 }
 
 short getPosition() {
@@ -197,11 +210,9 @@ void goToDayNumber(int dayNumber) {
     goToPosition(newPosition, currentPosition);
   }
 
-  server.println(dayNumber);
-  Serial.print("Current week: ");
-  Serial.println(dayNumber);
-
-  Particle.publish("showWeek", dayNumber);
+  server.print(dayNumber);
+  Particle.publish("showDay", dayNumber);
+  Serial.println("Current day: " + String(dayNumber));
 }
 
 int executeCommand(String command) {
@@ -224,7 +235,7 @@ int executeCommand(String command) {
       break;
     case 'T':
       Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
+      Serial.println(String(WiFi.localIP()) + ":" + String(PORT));
       Serial.print("SSID: ");
       Serial.println(WiFi.SSID());
       break;
