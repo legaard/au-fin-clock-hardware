@@ -16,20 +16,25 @@
 
 //misc
 #define NUMBER_OF_DAYS 30
+#define NUMBER_OF_MINUTES_12_HOURS (60 * 12) - 1
 #define EERPROM_ADDRESS 0
 #define THRESHOLD_IDLE 15
+
+//time
+#define TIME_UPDATE_INTERVAL 60
 
 Stepper stepper(STEPS, D4, D2, D3, D1);
 int dayArray[NUMBER_OF_DAYS];
 int currentDayNumber;
 
-unsigned long timeStamp = -1;
+unsigned long timeStampIdle = -1;
+unsigned long timeStampTime;
 
 // TCP connection code
 int PORT = 1337;
+char MESSAGE_SEPARATOR = '#';
 TCPServer server = TCPServer(PORT);
 TCPClient client;
-char MESSAGE_SEPARATOR = '#';
 
 void setup() {
   // setup serial communication (for debugging)
@@ -44,6 +49,7 @@ void setup() {
   pinMode(BUTTON_FORWARD, INPUT);
   pinMode(BUTTON_BACK, INPUT);
   pinMode(D7, OUTPUT); // built in LED
+  stepper.setSpeed(SPEED_MEDIUM);
 
   // create array with day intervals
   for(int i = 0; i < NUMBER_OF_DAYS; i++) {
@@ -58,15 +64,15 @@ void setup() {
   // set currentday once the connection to WiFi and the cloud has been established
   waitUntil(WiFi.ready);
   waitUntil(Particle.connected);
-  currentDayNumber = Time.day();
 
   // set stepper speed and set initial postion
-  stepper.setSpeed(SPEED_MEDIUM);
-  goToDayNumber(currentDayNumber);
+  Time.zone(2); //time zone difference (+2)
+  currentDayNumber = Time.day();
+  goToTime(Time.hourFormat12(), Time.minute());
+  timeStampTime = millis();
 }
 
 void loop() {
-
   // execute command when data is available
   if(Serial.available() > 0) {
     executeCommand(Serial.readString());
@@ -81,45 +87,60 @@ void loop() {
 
   // set client when available
   if(!client.connected()) {
-    Serial.println("Waiting for client...");
-
     // use built in LED to indicate that no client is connected
-    digitalWrite(D7, HIGH);
-    delay(1000);
     digitalWrite(D7, LOW);
-    delay(1000);
-
     client = server.available();
   }
 
   // echo everything back to the client
   if(client.connected()) {
+    if(digitalRead(D7) == LOW) digitalWrite(D7, HIGH);
+
     while(client.available()) {
       String data = client.readStringUntil(MESSAGE_SEPARATOR);
-      if(data == "ping") server.print(data.concat(MESSAGE_SEPARATOR));
+      if(data == "ping") {
+        String response = "P" + String(MESSAGE_SEPARATOR);
+        server.print(response);
+      }
     }
   }
 
-  // if clock has been idle for more than THRESHOLD_IDLE seconds
-  if(timeStamp != -1 && (millis() - timeStamp) > (THRESHOLD_IDLE * 1000)) {
-    goToDayNumber(currentDayNumber);
-    timeStamp = -1;
+  // update time and day every sixty seconds
+  if(timeStampIdle == -1 && (millis() - timeStampTime) > (TIME_UPDATE_INTERVAL * 1000)) {
+    goToTime(Time.hourFormat12(), Time.minute());
+    currentDayNumber = Time.day();
+    timeStampTime = millis();
   }
+
+  // if clock has been idle for more than THRESHOLD_IDLE seconds
+  if(timeStampIdle != -1 && (millis() - timeStampIdle) > (THRESHOLD_IDLE * 1000)) {
+    String message = "H" + String(MESSAGE_SEPARATOR);
+    server.print(message);
+    timeStampIdle = -1; // -1 means buttons have not been pushed for some time
+  }
+
+  //TODO: when sensor is triggered --> goToCurrentDay --> send message to view (D[currentDay])
 
   // when forward button is being pushed
   if(digitalRead(BUTTON_FORWARD) == HIGH) {
     int stepsTaken = 0;
+    int newPosition;
+    int dayShowing;
 
     while(digitalRead(BUTTON_FORWARD) == HIGH) {
       stepper.step(FORWARD_STEP);
       stepsTaken++;
+      newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
+
+      if(getDayNumberFromPosition(newPosition) != dayShowing) {
+        dayShowing = getDayNumberFromPosition(newPosition);
+        String message = "D" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR;
+        server.print(message);
+      }
     }
 
-    int newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
-
-    server.print("U" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR);
     setPosition(newPosition);
-    timeStamp = millis();
+    timeStampIdle = millis();
 
     Particle.publish("button", "forward");
   }
@@ -127,24 +148,31 @@ void loop() {
   // when back button is being pushed
   if(digitalRead(BUTTON_BACK) == HIGH) {
     int stepsTaken = 0;
+    int newPosition;
+    int dayShowing;
 
     while(digitalRead(BUTTON_BACK) == HIGH) {
       stepper.step(BACKWARD_STEP);
       stepsTaken++;
+
+      int difference = getPosition() - stepsTaken;
+
+      if(difference >= 0) {
+        newPosition = difference;
+      } else {
+        newPosition = ONE_REVOLUTION - ((stepsTaken - getPosition()) % ONE_REVOLUTION);
+      }
+
+      if(getDayNumberFromPosition(newPosition) != dayShowing) {
+        dayShowing = getDayNumberFromPosition(newPosition);
+        String message = "D" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR;
+        server.print(message);
+      }
+
     }
 
-    int difference = getPosition() - stepsTaken;
-    int newPosition;
-
-    if(difference >= 0) {
-      newPosition = difference;
-    } else {
-      newPosition = ONE_REVOLUTION - ((stepsTaken - getPosition()) % ONE_REVOLUTION);
-    }
-
-    server.print("U" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR);
     setPosition(newPosition);
-    timeStamp = millis();
+    timeStampIdle = millis();
 
     Particle.publish("button", "backward");
   }
@@ -170,9 +198,9 @@ short getPosition() {
   return position;
 }
 
-void goToPosition(int to, int from) {
-  stepper.step(from - to);
-  setPosition(to);
+void goToPosition(int newPosition) {
+  stepper.step(getPosition() - newPosition);
+  setPosition(newPosition);
 }
 
 int getDayNumberFromPosition(int stepPosition) {
@@ -195,7 +223,6 @@ int getDayNumberFromPosition(int stepPosition) {
 
 void goToDayNumber(int dayNumber) {
   int offset = (ONE_REVOLUTION / NUMBER_OF_DAYS) / 2;
-  int currentPosition = getPosition();
 
   if(dayNumber < 0 || dayNumber > 30) {
     Serial.println("Cannot go to day – day is not in interval!");
@@ -204,15 +231,29 @@ void goToDayNumber(int dayNumber) {
 
   if(dayNumber == 1) {
     int newPosition = offset;
-    goToPosition(newPosition, currentPosition);
+    goToPosition(newPosition);
   } else {
     int newPosition = dayArray[dayNumber - 1] - offset;
-    goToPosition(newPosition, currentPosition);
+    goToPosition(newPosition);
   }
 
-  server.print(dayNumber);
+  server.print("D" + String(dayNumber) + MESSAGE_SEPARATOR);
   Particle.publish("showDay", dayNumber);
   Serial.println("Current day: " + String(dayNumber));
+}
+
+void goToTime(int hour, int minute) {
+  if(hour < 1 || hour > 12 || minute < 0 || minute > 59) {
+    Serial.println("Time cannot be set to " + String(hour) + ":" + String(minute));
+    return;
+  }
+
+  double totalNumberOfMinutes = hour == 12 ? minute : ((60 * hour) + minute);
+  double stepSize = ((double) ONE_REVOLUTION) / ((double) NUMBER_OF_MINUTES_12_HOURS);
+  int newPosition = totalNumberOfMinutes * stepSize;
+  goToPosition(newPosition);
+
+  Serial.println("Time set to " + String(hour) + ":" + String(minute));
 }
 
 int executeCommand(String command) {
@@ -234,6 +275,9 @@ int executeCommand(String command) {
       goToDayNumber(value);
       break;
     case 'T':
+      goToTime(command.substring(1, 3).toInt(), command.substring(4).toInt());
+      break;
+    case 'N':
       Serial.print("IP: ");
       Serial.println(String(WiFi.localIP()) + ":" + String(PORT));
       Serial.print("SSID: ");
