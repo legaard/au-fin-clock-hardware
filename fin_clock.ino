@@ -6,19 +6,25 @@
 #define SPEED_FAST 1000
 #define SPEED_MEDIUM 500
 #define SPEED_LOW 250
-#define SPEED_VERY_SLOW 100
+#define SPEED_VERY_LOW 100
 #define FORWARD_STEP -1
 #define BACKWARD_STEP 1
 
 // button properties
 #define BUTTON_FORWARD D5
 #define BUTTON_BACK D6
+#define TRIG A4
+#define ECHO A5
 
 //misc
 #define NUMBER_OF_DAYS 30
 #define NUMBER_OF_MINUTES_12_HOURS (60 * 12) - 1
 #define EERPROM_ADDRESS 0
 #define THRESHOLD_IDLE 15
+
+//ping
+#define SIZE_PING_AVG 10
+#define AVG_DISTANCE_TRIGGER 100
 
 //time
 #define TIME_UPDATE_INTERVAL 60
@@ -29,6 +35,9 @@ int currentDayNumber;
 
 unsigned long timeStampIdle = -1;
 unsigned long timeStampTime;
+
+// moving average
+long distanceArray[SIZE_PING_AVG];
 
 // TCP connection code
 int PORT = 1337;
@@ -48,8 +57,12 @@ void setup() {
   // set button pins
   pinMode(BUTTON_FORWARD, INPUT);
   pinMode(BUTTON_BACK, INPUT);
+
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+
   pinMode(D7, OUTPUT); // built in LED
-  stepper.setSpeed(SPEED_MEDIUM);
+  stepper.setSpeed(SPEED_LOW);
 
   // create array with day intervals
   for(int i = 0; i < NUMBER_OF_DAYS; i++) {
@@ -61,7 +74,7 @@ void setup() {
   Particle.function("command", executeCommand);
   server.begin();
 
-  // set currentday once the connection to WiFi and the cloud has been established
+  // set current day once the connection to WiFi and the cloud has been established
   waitUntil(WiFi.ready);
   waitUntil(Particle.connected);
 
@@ -113,13 +126,16 @@ void loop() {
   }
 
   // if clock has been idle for more than THRESHOLD_IDLE seconds
-  if(timeStampIdle != -1 && (millis() - timeStampIdle) > (THRESHOLD_IDLE * 1000)) {
+  if(timeStampIdle != -1 && (millis() - timeStampIdle) > (THRESHOLD_IDLE * 1000) && getAvgDistance() > AVG_DISTANCE_TRIGGER) {
     String message = "H" + String(MESSAGE_SEPARATOR);
     server.print(message);
     timeStampIdle = -1; // -1 means buttons have not been pushed for some time
   }
 
-  //TODO: when sensor is triggered --> goToCurrentDay --> send message to view (D[currentDay])
+  if(getAvgDistance() < AVG_DISTANCE_TRIGGER && timeStampIdle == -1) {
+    timeStampIdle = millis();
+    goToDayNumber(currentDayNumber);
+  }
 
   // when forward button is being pushed
   if(digitalRead(BUTTON_FORWARD) == HIGH) {
@@ -132,9 +148,11 @@ void loop() {
       stepsTaken++;
       newPosition = (getPosition() + stepsTaken) % ONE_REVOLUTION;
 
-      if(getDayNumberFromPosition(newPosition) != dayShowing) {
-        dayShowing = getDayNumberFromPosition(newPosition);
-        String message = "D" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR;
+      int newDay = getDayNumberFromPosition(newPosition);
+
+      if(newDay != dayShowing) {
+        dayShowing = newDay;
+        String message = "D" + String(dayShowing) + MESSAGE_SEPARATOR;
         server.print(message);
       }
     }
@@ -156,6 +174,7 @@ void loop() {
       stepsTaken++;
 
       int difference = getPosition() - stepsTaken;
+      int newDay;
 
       if(difference >= 0) {
         newPosition = difference;
@@ -163,9 +182,11 @@ void loop() {
         newPosition = ONE_REVOLUTION - ((stepsTaken - getPosition()) % ONE_REVOLUTION);
       }
 
-      if(getDayNumberFromPosition(newPosition) != dayShowing) {
-        dayShowing = getDayNumberFromPosition(newPosition);
-        String message = "D" + String(getDayNumberFromPosition(newPosition)) + MESSAGE_SEPARATOR;
+      newDay = getDayNumberFromPosition(newPosition);
+
+      if(newDay != dayShowing) {
+        dayShowing = newDay;
+        String message = "D" + String(dayShowing) + MESSAGE_SEPARATOR;
         server.print(message);
       }
 
@@ -176,6 +197,10 @@ void loop() {
 
     Particle.publish("button", "backward");
   }
+
+  //add new ping sensor value and delay photon to save power
+  addNumberToDistanceArray(getCurrentDistance());
+  delay(50);
 }
 
 /********** HELPER METHODS **********/
@@ -266,6 +291,7 @@ int executeCommand(String command) {
       setPosition((short) value);
       break;
     case 'R':
+      EEPROM.clear(); // clear to make sure that a new start position has to be set
       stepper.step(-1 * value); //negative is forward and positive backward
       break;
     case 'C':
@@ -289,4 +315,37 @@ int executeCommand(String command) {
   }
 
   return res;
+}
+
+long getCurrentDistance() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(5);
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10);
+
+  long duration = pulseIn(ECHO, HIGH);
+  long cm = (duration/2) / 29.1;
+
+  return cm;
+}
+
+long getAvgDistance() {
+  long sum = 0;
+
+  for(int i = 0; i < SIZE_PING_AVG; i++) {
+    sum += distanceArray[i];
+  }
+
+  return (sum / SIZE_PING_AVG);
+}
+
+void addNumberToDistanceArray(long newNumber) {
+  // discard all values which are out of the sensors ordinary range
+  if (newNumber > 400 || newNumber < 2) return;
+
+  for(int i = 0; i < SIZE_PING_AVG - 1; i++) {
+    distanceArray[i] = distanceArray[i + 1];
+  }
+
+  distanceArray[SIZE_PING_AVG - 1] = newNumber;
 }
