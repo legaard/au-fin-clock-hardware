@@ -20,7 +20,7 @@
 #define NUMBER_OF_DAYS 30
 #define NUMBER_OF_MINUTES_12_HOURS (60 * 12) - 1
 #define EERPROM_ADDRESS 0
-#define THRESHOLD_IDLE 15
+#define THRESHOLD_IDLE 20
 
 //ping
 #define SIZE_PING_AVG 10
@@ -70,6 +70,11 @@ void setup() {
     dayArray[i] = i != NUMBER_OF_DAYS - 1 ? ((i * intervalSize) + intervalSize) : ONE_REVOLUTION;
   }
 
+  // populate distance array from the beginning to avoid at the current day
+  for(int i = 0; i < SIZE_PING_AVG - 1; i++) {
+    distanceArray[i] = AVG_DISTANCE_TRIGGER * 2;
+  }
+
   // TCP and cloud functions
   Particle.function("command", executeCommand);
   server.begin();
@@ -83,6 +88,10 @@ void setup() {
   currentDayNumber = Time.day();
   goToTime(Time.hourFormat12(), Time.minute());
   timeStampTime = millis();
+
+  // if shown, hide information from the beginning
+  String message = "H" + String(MESSAGE_SEPARATOR);
+  server.print(message);
 }
 
 void loop() {
@@ -118,21 +127,22 @@ void loop() {
     }
   }
 
-  // update time and day every sixty seconds
-  if(timeStampIdle == -1 && (millis() - timeStampTime) > (TIME_UPDATE_INTERVAL * 1000)) {
-    goToTime(Time.hourFormat12(), Time.minute());
-    currentDayNumber = Time.day();
-    timeStampTime = millis();
-  }
-
   // if clock has been idle for more than THRESHOLD_IDLE seconds
   if(timeStampIdle != -1 && (millis() - timeStampIdle) > (THRESHOLD_IDLE * 1000) && getAvgDistance() > AVG_DISTANCE_TRIGGER) {
     String message = "H" + String(MESSAGE_SEPARATOR);
     server.print(message);
-    timeStampIdle = -1; // -1 means buttons have not been pushed for some time
+    timeStampIdle = -1;
+    goToTime(Time.hourFormat12(), Time.minute());
   }
 
-  if(getAvgDistance() < AVG_DISTANCE_TRIGGER && timeStampIdle == -1) {
+  // update time and day every sixty seconds
+  if(timeStampIdle == -1 && (millis() - timeStampTime) > (TIME_UPDATE_INTERVAL * 1000)) {
+    timeStampTime = millis();
+    currentDayNumber = Time.day();
+    goToTime(Time.hourFormat12(), Time.minute());
+  }
+
+  if(timeStampIdle == -1 && getAvgDistance() < AVG_DISTANCE_TRIGGER) {
     timeStampIdle = millis();
     goToDayNumber(currentDayNumber);
   }
@@ -254,6 +264,11 @@ void goToDayNumber(int dayNumber) {
     return;
   }
 
+  // send day to show graphic overlay
+  server.print("D" + String(dayNumber) + MESSAGE_SEPARATOR);
+  Particle.publish("showDay", dayNumber);
+  Serial.println("Current day: " + String(dayNumber));
+
   if(dayNumber == 1) {
     int newPosition = offset;
     goToPosition(newPosition);
@@ -261,10 +276,6 @@ void goToDayNumber(int dayNumber) {
     int newPosition = dayArray[dayNumber - 1] - offset;
     goToPosition(newPosition);
   }
-
-  server.print("D" + String(dayNumber) + MESSAGE_SEPARATOR);
-  Particle.publish("showDay", dayNumber);
-  Serial.println("Current day: " + String(dayNumber));
 }
 
 void goToTime(int hour, int minute) {
@@ -340,7 +351,7 @@ long getAvgDistance() {
 }
 
 void addNumberToDistanceArray(long newNumber) {
-  // discard all values which are out of the sensors ordinary range
+  // discard all values which are out of the sensor's ordinary range
   if (newNumber > 400 || newNumber < 2) return;
 
   for(int i = 0; i < SIZE_PING_AVG - 1; i++) {
